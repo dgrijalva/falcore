@@ -1,8 +1,7 @@
-package upstream
+package filter
 
 import (
 	"fmt"
-	"github.com/ngmoco/falcore"
 	"net"
 	"net/http"
 	"time"
@@ -44,7 +43,7 @@ func NewUpstream(host string, port int, forceHttp bool) *Upstream {
 		u.tcpaddr.Port = port
 		u.tcpaddr.IP = ip
 	} else {
-		falcore.Warn("Can't get IP addr for %v: %v", host, err)
+		Warn("Can't get IP addr for %v: %v", host, err)
 	}
 	u.Timeout = 60e9
 	u.host = fmt.Sprintf("%v:%v", u.Host, u.Port)
@@ -52,7 +51,7 @@ func NewUpstream(host string, port int, forceHttp bool) *Upstream {
 	u.transport = new(http.Transport)
 
 	u.transport.Dial = func(n, addr string) (c net.Conn, err error) {
-		falcore.Fine("Dialing connection to %v", u.tcpaddr)
+		Fine("Dialing connection to %v", u.tcpaddr)
 		var ctcp *net.TCPConn
 		ctcp, err = net.DialTCP("tcp4", nil, u.tcpaddr)
 		if ctcp != nil {
@@ -60,7 +59,7 @@ func NewUpstream(host string, port int, forceHttp bool) *Upstream {
 			u.tcpconn.SetDeadline(time.Now().Add(u.Timeout))
 		}
 		if err != nil {
-			falcore.Error("Dial Failed: %v", err)
+			Error("Dial Failed: %v", err)
 		}
 		return ctcp, err
 	}
@@ -73,7 +72,7 @@ func (u *Upstream) SetPoolSize(size int) {
 	u.transport.MaxIdleConnsPerHost = size
 }
 
-func (u *Upstream) FilterRequest(request *falcore.Request) (res *http.Response) {
+func (u *Upstream) FilterRequest(request *Request) (res *http.Response) {
 	var err error
 	req := request.HttpRequest
 
@@ -88,19 +87,19 @@ func (u *Upstream) FilterRequest(request *falcore.Request) (res *http.Response) 
 		u.tcpconn.SetDeadline(time.Now().Add(u.Timeout))
 	}
 	res, err = u.transport.RoundTrip(req)
-	diff := falcore.TimeDiff(before, time.Now())
+	diff := TimeDiff(before, time.Now())
 	if err != nil {
 		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-			falcore.Error("%s Upstream Timeout error: %v", request.ID, err)
-			res = falcore.SimpleResponse(req, 504, nil, "Gateway Timeout\n")
+			Error("%s Upstream Timeout error: %v", request.ID, err)
+			res = SimpleResponse(req, 504, nil, "Gateway Timeout\n")
 			request.CurrentStage.Status = 2 // Fail
 		} else {
-			falcore.Error("%s Upstream error: %v", request.ID, err)
-			res = falcore.SimpleResponse(req, 502, nil, "Bad Gateway\n")
+			Error("%s Upstream error: %v", request.ID, err)
+			res = SimpleResponse(req, 502, nil, "Bad Gateway\n")
 			request.CurrentStage.Status = 2 // Fail
 		}
 	}
-	falcore.Debug("%s [%s] [%s] %s s=%d Time=%.4f", request.ID, req.Method, u.host, req.URL, res.StatusCode, diff)
+	Debug("%s [%s] [%s] %s s=%d Time=%.4f", request.ID, req.Method, u.host, req.URL, res.StatusCode, diff)
 	return
 }
 
@@ -111,7 +110,7 @@ func (u *Upstream) ping() (up bool, ok bool) {
 		request, err := http.NewRequest("GET", "http://localhost"+u.PingPath, nil)
 		request.Header.Set("Connection", "Keep-Alive") // not sure if this should be here for a ping
 		if err != nil {
-			falcore.Error("Bad Ping request: %v", err)
+			Error("Bad Ping request: %v", err)
 			return false, true
 		}
 		if u.tcpconn != nil {
@@ -120,7 +119,7 @@ func (u *Upstream) ping() (up bool, ok bool) {
 		res, err := u.transport.RoundTrip(request)
 
 		if err != nil {
-			falcore.Error("Failed Ping to %v:%v: %v", u.Host, u.Port, err)
+			Error("Failed Ping to %v:%v: %v", u.Host, u.Port, err)
 			return false, true
 		} else {
 			res.Body.Close()
@@ -128,7 +127,7 @@ func (u *Upstream) ping() (up bool, ok bool) {
 		if res.StatusCode == 200 {
 			return true, true
 		}
-		falcore.Error("Failed Ping to %v:%v: %v", u.Host, u.Port, res.Status)
+		Error("Failed Ping to %v:%v: %v", u.Host, u.Port, res.Status)
 		// bad status
 		return false, true
 	}

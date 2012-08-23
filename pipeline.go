@@ -2,6 +2,7 @@ package falcore
 
 import (
 	"container/list"
+	"github.com/ngmoco/falcore/filter"
 	"log"
 	"net/http"
 	"reflect"
@@ -24,7 +25,7 @@ import (
 type Pipeline struct {
 	Upstream            *list.List
 	Downstream          *list.List
-	RequestDoneCallback RequestFilter
+	RequestDoneCallback filter.RequestFilter
 }
 
 func NewPipeline() (l *Pipeline) {
@@ -37,28 +38,28 @@ func NewPipeline() (l *Pipeline) {
 // Pipelines are also RequestFilters... wacky eh?
 // Be careful though because a Pipeline will always returns a 
 // response so no Filters after a Pipeline filter will be run.
-func (p *Pipeline) FilterRequest(req *Request) *http.Response {
+func (p *Pipeline) FilterRequest(req *filter.Request) *http.Response {
 	return p.execute(req)
 }
 
-func (p *Pipeline) execute(req *Request) (res *http.Response) {
+func (p *Pipeline) execute(req *filter.Request) (res *http.Response) {
 	for e := p.Upstream.Front(); e != nil && res == nil; e = e.Next() {
 		if router, ok := e.Value.(Router); ok {
 			t := reflect.TypeOf(router)
-			req.startPipelineStage(t.String())
+			req.StartPipelineStage(t.String())
 			pipe := router.SelectPipeline(req)
-			req.finishPipelineStage()
+			req.FinishPipelineStage()
 			if pipe != nil {
 				t := reflect.TypeOf(pipe)
-				req.startPipelineStage(t.String()[1:])
+				req.StartPipelineStage(t.String()[1:])
 				res = pipe.FilterRequest(req)
-				req.finishPipelineStage()
+				req.FinishPipelineStage()
 			}
-		} else if filter, ok := e.Value.(RequestFilter); ok {
+		} else if filter, ok := e.Value.(filter.RequestFilter); ok {
 			t := reflect.TypeOf(filter)
-			req.startPipelineStage(t.String())
+			req.StartPipelineStage(t.String())
 			res = filter.FilterRequest(req)
-			req.finishPipelineStage()
+			req.FinishPipelineStage()
 			if res != nil {
 				break
 			}
@@ -70,20 +71,20 @@ func (p *Pipeline) execute(req *Request) (res *http.Response) {
 
 	if res == nil {
 		// Error: No response was generated
-		res = SimpleResponse(req.HttpRequest, 404, nil, "Not found\n")
+		res = filter.SimpleResponse(req.HttpRequest, 404, nil, "Not found\n")
 	}
 
 	p.down(req, res)
 	return
 }
 
-func (p *Pipeline) down(req *Request, res *http.Response) {
+func (p *Pipeline) down(req *filter.Request, res *http.Response) {
 	for e := p.Downstream.Front(); e != nil; e = e.Next() {
-		if filter, ok := e.Value.(ResponseFilter); ok {
+		if filter, ok := e.Value.(filter.ResponseFilter); ok {
 			t := reflect.TypeOf(filter)
-			req.startPipelineStage(t.String())
+			req.StartPipelineStage(t.String())
 			filter.FilterResponse(req, res)
-			req.finishPipelineStage()
+			req.FinishPipelineStage()
 		} else {
 			// TODO
 			break

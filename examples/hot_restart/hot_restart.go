@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/ngmoco/falcore"
+	"github.com/ngmoco/falcore/filter"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,8 +12,8 @@ import (
 )
 
 // very simple request filter
-func Filter(request *falcore.Request) *http.Response {
-	return falcore.SimpleResponse(request.HttpRequest, 200, nil, "OK\n")
+func Filter(request *filter.Request) *http.Response {
+	return filter.SimpleResponse(request.HttpRequest, 200, nil, "OK\n")
 }
 
 // flag to accept a socket file descriptor
@@ -24,7 +25,7 @@ func main() {
 
 	// create the pipeline
 	pipeline := falcore.NewPipeline()
-	pipeline.Upstream.PushBack(falcore.NewRequestFilter(Filter))
+	pipeline.Upstream.PushBack(filter.NewRequestFilter(Filter))
 
 	// create the server with the pipeline
 	srv := falcore.NewServer(8090, pipeline)

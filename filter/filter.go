@@ -1,4 +1,4 @@
-package falcore
+package filter
 
 import (
 	"net/http"

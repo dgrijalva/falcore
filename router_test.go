@@ -1,6 +1,7 @@
 package falcore
 
 import (
+	"github.com/ngmoco/falcore/filter"
 	"net/http"
 	"regexp"
 	"testing"
@@ -8,7 +9,7 @@ import (
 
 type SimpleFilter int
 
-func (sf SimpleFilter) FilterRequest(req *Request) *http.Response {
+func (sf SimpleFilter) FilterRequest(req *filter.Request) *http.Response {
 	sf = -sf
 	return nil
 }

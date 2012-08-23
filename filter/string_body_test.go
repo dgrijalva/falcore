@@ -1,4 +1,4 @@
-package falcore
+package filter
 
 import (
 	"bytes"
@@ -14,8 +14,8 @@ func TestStringBody(t *testing.T) {
 	tmp, _ := http.NewRequest("POST", "/hello", bytes.NewReader(expected))
 	tmp.Header.Set("Content-Type", "text/plain")
 	tmp.ContentLength = int64(len(expected))
-	req := newRequest(tmp, nil, time.Now())
-	req.startPipelineStage("StringBodyTest")
+	req := NewRequest(tmp, nil, time.Now())
+	req.StartPipelineStage("StringBodyTest")
 
 	sbf := NewStringBodyFilter()
 	//sbf := &StringBodyFilter{}
@@ -62,8 +62,8 @@ func BenchmarkStringBody(b *testing.B) {
 	b.StopTimer()
 	expected := []byte("test=123456&test2=987654&test3=somedatanstuff&test4=moredataontheend")
 	expLen := int64(len(expected))
-	req := newRequest(nil, nil, time.Now())
-	req.startPipelineStage("StringBodyTest")
+	req := NewRequest(nil, nil, time.Now())
+	req.StartPipelineStage("StringBodyTest")
 
 	sbf := NewStringBodyFilter()
 	//sbf := &StringBodyFilter{}

@@ -1,20 +1,19 @@
-package static_file
+package filter
 
 import (
 	"bytes"
-	"fmt"
-	"github.com/ngmoco/falcore"
 	"io"
 	"io/ioutil"
 	"log"
 	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
-var srv *falcore.Server
+// var srv *falcore.Server
 
 func init() {
 	// Silence log output
@@ -26,33 +25,12 @@ func init() {
 	mime.AddExtensionType(".txt", "text/plain")
 	mime.AddExtensionType(".png", "image/png")
 
-	go func() {
-
-		// falcore setup
-		pipeline := falcore.NewPipeline()
-		pipeline.Upstream.PushBack(&Filter{
-			PathPrefix: "/",
-			BasePath:   "../test/",
-		})
-		srv = falcore.NewServer(0, pipeline)
-		if err := srv.ListenAndServe(); err != nil {
-			panic(fmt.Sprintf("Could not start falcore: %v", err))
-		}
-	}()
-}
-
-func port() int {
-	for srv.Port() == 0 {
-		time.Sleep(1e7)
-	}
-	return srv.Port()
 }
 
 func get(p string) (r *http.Response, err error) {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%v", fmt.Sprintf("localhost:%v/", port())), nil)
-	req.URL.Path = p
-	r, err = http.DefaultTransport.RoundTrip(req)
-	return
+	req, _ := http.NewRequest("GET", p, nil)
+	rt := http.NewFileTransport(http.Dir("/"))
+	return rt.RoundTrip(req)
 }
 
 var fourOhFourTests = []struct {
@@ -133,17 +111,23 @@ var basicTests = []struct {
 
 func TestBasicFiles(t *testing.T) {
 	rbody := new(bytes.Buffer)
+	path := filepath.SplitList(os.Getenv("GOPATH"))
+	p := filepath.Join(path[0], "/src/github.com/ngmoco/falcore/test")
+	filter := &FileFilter{p, ""}
 	for _, test := range basicTests {
 		// read in test file data
 		if test.file != "" {
 			test.data, _ = ioutil.ReadFile(test.file)
 		}
 
-		r, err := get(test.url)
+		req, err := http.NewRequest("GET", test.url, nil)
 		if err != nil {
-			t.Errorf("%v Error GETting file:%v", test.name, err)
+			t.Errorf("error creating request: %v", err)
 			continue
 		}
+		re := new(Request)
+		re.HttpRequest = req
+		r := filter.FilterRequest(re)
 		if r.StatusCode != 200 {
 			t.Errorf("%v Expected status 200, got %v", test.name, r.StatusCode)
 			continue

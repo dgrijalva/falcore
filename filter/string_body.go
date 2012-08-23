@@ -1,7 +1,8 @@
-package falcore
+package filter
 
 import (
 	"bytes"
+	"github.com/ngmoco/falcore/buffer"
 	"io"
 	"net/http"
 	"strings"
@@ -12,16 +13,16 @@ import (
 
 type StringBody struct {
 	BodyBuffer *bytes.Reader
-	bpe        *bufferPoolEntry
+	bpe        *buffer.PoolEntry
 }
 
 type StringBodyFilter struct {
-	pool *bufferPool
+	pool *buffer.Pool
 }
 
 func NewStringBodyFilter() *StringBodyFilter {
 	sbf := &StringBodyFilter{}
-	sbf.pool = newBufferPool(100, 1024)
+	sbf.pool = buffer.NewPool(100, 1024)
 	return sbf
 }
 func (sbf *StringBodyFilter) FilterRequest(request *Request) *http.Response {
@@ -47,10 +48,10 @@ func (sbf *StringBodyFilter) readRequestBody(r *http.Request) (sb *StringBody, e
 	if strings.SplitN(ct, ";", 2)[0] != "multipart/form-data" && r.ContentLength > 0 {
 		sb = &StringBody{}
 		const maxFormSize = int64(10 << 20) // 10 MB is a lot of text.
-		sb.bpe = sbf.pool.take(io.LimitReader(r.Body, maxFormSize+1))
+		sb.bpe = sbf.pool.Take(io.LimitReader(r.Body, maxFormSize+1))
 
 		// There shouldn't be a null byte so we should get EOF
-		b, e := sb.bpe.br.ReadBytes(0)
+		b, e := sb.bpe.Br.ReadBytes(0)
 		if e != nil && e != io.EOF {
 			return nil, e
 		}
@@ -66,7 +67,7 @@ func (sbf *StringBodyFilter) readRequestBody(r *http.Request) (sb *StringBody, e
 // this speeds up this filter significantly by reusing buffers
 func (sbf *StringBodyFilter) ReturnBuffer(request *Request) {
 	if sb, ok := request.HttpRequest.Body.(*StringBody); ok {
-		sbf.pool.give(sb.bpe)
+		sbf.pool.Give(sb.bpe)
 	}
 }
 

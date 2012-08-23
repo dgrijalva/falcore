@@ -3,14 +3,15 @@ package falcore
 import (
 	"bytes"
 	"container/list"
+	"github.com/ngmoco/falcore/filter"
 	"net/http"
 	"testing"
 	"time"
 )
 
-func validGetRequest() *Request {
+func validGetRequest() *filter.Request {
 	tmp, _ := http.NewRequest("GET", "/hello", bytes.NewBuffer(make([]byte, 0)))
-	return newRequest(tmp, nil, time.Now())
+	return filter.NewRequest(tmp, nil, time.Now())
 }
 
 var stageTrack *list.List
@@ -23,25 +24,25 @@ func doStageTrack() {
 	stageTrack.PushBack(i + 1)
 }
 
-func sumFilter(req *Request) *http.Response {
+func sumFilter(req *filter.Request) *http.Response {
 	doStageTrack()
 	return nil
 }
 
-func sumResponseFilter(*Request, *http.Response) {
+func sumResponseFilter(*filter.Request, *http.Response) {
 	doStageTrack()
 }
 
-func successFilter(req *Request) *http.Response {
+func successFilter(req *filter.Request) *http.Response {
 	doStageTrack()
-	return SimpleResponse(req.HttpRequest, 200, nil, "OK")
+	return filter.SimpleResponse(req.HttpRequest, 200, nil, "OK")
 }
 
 func TestPipelineNoResponse(t *testing.T) {
 	p := NewPipeline()
 
 	stageTrack = list.New()
-	f := NewRequestFilter(sumFilter)
+	f := filter.NewRequestFilter(sumFilter)
 
 	p.Upstream.PushBack(f)
 	p.Upstream.PushBack(f)
@@ -67,11 +68,11 @@ func TestPipelineOKResponse(t *testing.T) {
 	p := NewPipeline()
 
 	stageTrack = list.New()
-	f := NewRequestFilter(sumFilter)
+	f := filter.NewRequestFilter(sumFilter)
 
 	p.Upstream.PushBack(f)
 	p.Upstream.PushBack(f)
-	p.Upstream.PushBack(NewRequestFilter(successFilter))
+	p.Upstream.PushBack(filter.NewRequestFilter(successFilter))
 	p.Upstream.PushBack(f)
 
 	response := p.execute(validGetRequest())
@@ -93,13 +94,13 @@ func TestPipelineResponseFilter(t *testing.T) {
 	p := NewPipeline()
 
 	stageTrack = list.New()
-	f := NewRequestFilter(sumFilter)
+	f := filter.NewRequestFilter(sumFilter)
 
 	p.Upstream.PushBack(f)
-	p.Upstream.PushBack(NewRequestFilter(successFilter))
+	p.Upstream.PushBack(filter.NewRequestFilter(successFilter))
 	p.Upstream.PushBack(f)
-	p.Downstream.PushBack(NewResponseFilter(sumResponseFilter))
-	p.Downstream.PushBack(NewResponseFilter(sumResponseFilter))
+	p.Downstream.PushBack(filter.NewResponseFilter(sumResponseFilter))
+	p.Downstream.PushBack(filter.NewResponseFilter(sumResponseFilter))
 
 	//response := new(http.Response)
 	req := validGetRequest()
@@ -119,9 +120,9 @@ func TestPipelineResponseFilter(t *testing.T) {
 	if response.StatusCode != 200 {
 		t.Errorf("Pipeline response code wrong: %v expected %v", response.StatusCode, 200)
 	}
-	req.finishRequest()
-	if req.Signature() != "F7F5165F" {
-		t.Errorf("Signature failed: %v expected %v", req.Signature(), "F7F5165F")
+	req.FinishRequest()
+	if req.Signature() != "DCA810F4" {
+		t.Errorf("Signature failed: %v expected %v", req.Signature(), "DCA810F4")
 	}
 	if req.PipelineStageStats.Len() != stages {
 		t.Errorf("PipelineStageStats incomplete: %v expected %v", req.PipelineStageStats.Len(), stages)
@@ -134,17 +135,17 @@ func TestPipelineStatsChecksum(t *testing.T) {
 	p := NewPipeline()
 
 	stageTrack = list.New()
-	f := NewRequestFilter(sumFilter)
+	f := filter.NewRequestFilter(sumFilter)
 
 	p.Upstream.PushBack(f)
-	p.Upstream.PushBack(NewRequestFilter(func(req *Request) *http.Response {
+	p.Upstream.PushBack(filter.NewRequestFilter(func(req *filter.Request) *http.Response {
 		doStageTrack()
 		req.CurrentStage.Status = 1
 		return nil
 	}))
-	p.Upstream.PushBack(NewRequestFilter(successFilter))
-	p.Downstream.PushBack(NewResponseFilter(sumResponseFilter))
-	p.Downstream.PushBack(NewResponseFilter(sumResponseFilter))
+	p.Upstream.PushBack(filter.NewRequestFilter(successFilter))
+	p.Downstream.PushBack(filter.NewResponseFilter(sumResponseFilter))
+	p.Downstream.PushBack(filter.NewResponseFilter(sumResponseFilter))
 
 	//response := new(http.Response)
 	req := validGetRequest()
@@ -164,9 +165,9 @@ func TestPipelineStatsChecksum(t *testing.T) {
 	if response.StatusCode != 200 {
 		t.Errorf("Pipeline response code wrong: %v expected %v", response.StatusCode, 200)
 	}
-	req.finishRequest()
-	if req.Signature() != "CA843113" {
-		t.Errorf("Signature failed: %v expected %v", req.Signature(), "CA843113")
+	req.FinishRequest()
+	if req.Signature() != "7C42487" {
+		t.Errorf("Signature failed: %v expected %v", req.Signature(), "7C42487")
 	}
 	if req.PipelineStageStats.Len() != stages {
 		t.Errorf("PipelineStageStats incomplete: %v expected %v", req.PipelineStageStats.Len(), stages)

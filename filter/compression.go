@@ -1,10 +1,9 @@
-package compression
+package filter
 
 import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
-	"github.com/ngmoco/falcore"
 	"io"
 	"net/http"
 	"strings"
@@ -12,12 +11,12 @@ import (
 
 var DefaultTypes = []string{"text/plain", "text/html", "application/json", "text/xml"}
 
-type Filter struct {
+type CompressionFilter struct {
 	types []string
 }
 
-func NewFilter(types []string) *Filter {
-	f := new(Filter)
+func NewCompressionFilter(types []string) *CompressionFilter {
+	f := new(CompressionFilter)
 	if types != nil {
 		f.types = types
 	} else {
@@ -26,7 +25,7 @@ func NewFilter(types []string) *Filter {
 	return f
 }
 
-func (c *Filter) FilterResponse(request *falcore.Request, res *http.Response) {
+func (c *CompressionFilter) FilterResponse(request *Request, res *http.Response) {
 	req := request.HttpRequest
 	if accept := req.Header.Get("Accept-Encoding"); accept != "" {
 
@@ -68,7 +67,7 @@ func (c *Filter) FilterResponse(request *falcore.Request, res *http.Response) {
 		case "deflate":
 			comp, err := flate.NewWriter(buf, -1)
 			if err != nil {
-				falcore.Error("Compression Error: %v", err)
+				Error("Compression Error: %v", err)
 				request.CurrentStage.Status = 1 // Skip
 				return
 			}

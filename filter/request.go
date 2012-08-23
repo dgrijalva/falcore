@@ -1,4 +1,4 @@
-package falcore
+package filter
 
 import (
 	"container/list"
@@ -8,8 +8,8 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"time"
 	"reflect"
+	"time"
 )
 
 // Request wrapper
@@ -53,7 +53,7 @@ type Request struct {
 }
 
 // Used internally to create and initialize a new request.
-func newRequest(request *http.Request, conn net.Conn, startTime time.Time) *Request {
+func NewRequest(request *http.Request, conn net.Conn, startTime time.Time) *Request {
 	fReq := new(Request)
 	fReq.Context = make(map[string]interface{})
 	fReq.HttpRequest = request
@@ -76,36 +76,36 @@ func newRequest(request *http.Request, conn net.Conn, startTime time.Time) *Requ
 // The PipelineStageStats is completed in the returned Request 
 // The falcore.Request.Connection and falcore.Request.RemoteAddr are nil
 func TestWithRequest(request *http.Request, filter RequestFilter) (*Request, *http.Response) {
-	r := newRequest(request, nil, time.Now())
+	r := NewRequest(request, nil, time.Now())
 	t := reflect.TypeOf(filter)
-	r.startPipelineStage(t.String())
+	r.StartPipelineStage(t.String())
 	res := filter.FilterRequest(r)
-	r.finishPipelineStage()
-	r.finishRequest()
+	r.FinishPipelineStage()
+	r.FinishRequest()
 	return r, res
 }
 
 // Starts a new pipeline stage and makes it the CurrentStage.
-func (fReq *Request) startPipelineStage(name string) {
+func (fReq *Request) StartPipelineStage(name string) {
 	fReq.CurrentStage = NewPiplineStage(name)
 	fReq.PipelineStageStats.PushBack(fReq.CurrentStage)
 }
 
 // Finishes the CurrentStage.
-func (fReq *Request) finishPipelineStage() {
+func (fReq *Request) FinishPipelineStage() {
 	fReq.CurrentStage.EndTime = time.Now()
-	fReq.finishCommon()
+	fReq.FinishCommon()
 }
 
 // Appends an already completed PipelineStageStat directly to the list
-func (fReq *Request) appendPipelineStage(pss *PipelineStageStat) {
+func (fReq *Request) AppendPipelineStage(pss *PipelineStageStat) {
 	fReq.PipelineStageStats.PushBack(pss)
 	fReq.CurrentStage = pss
-	fReq.finishCommon()
+	fReq.FinishCommon()
 }
 
 // Does some required bookeeping for the pipeline and the pipeline signature
-func (fReq *Request) finishCommon() {
+func (fReq *Request) FinishCommon() {
 	fReq.pipelineHash.Write([]byte(fReq.CurrentStage.Name))
 	fReq.pipelineHash.Write([]byte{fReq.CurrentStage.Status})
 	fReq.piplineTot += fReq.CurrentStage.EndTime.Sub(fReq.CurrentStage.StartTime)
@@ -138,7 +138,7 @@ func (fReq *Request) Trace() {
 	Trace("%s %-30s S=0 Tot=%.4f %%=%.2f", fReq.ID, "Overhead", float32(fReq.Overhead)/1.0e9, float32(fReq.Overhead)/1.0e9/reqTime*100.0)
 }
 
-func (fReq *Request) finishRequest() {
+func (fReq *Request) FinishRequest() {
 	fReq.EndTime = time.Now()
 	fReq.Overhead = fReq.EndTime.Sub(fReq.StartTime) - fReq.piplineTot
 }

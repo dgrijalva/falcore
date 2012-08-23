@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/ngmoco/falcore"
+	"github.com/ngmoco/falcore/filter"
 	"net/http"
 )
 
@@ -19,6 +20,9 @@ func main() {
 	// setup pipeline
 	pipeline := falcore.NewPipeline()
 
+	// set filter logger
+	filter.SetLogger(falcore.GetLogger())
+
 	// upstream
 	pipeline.Upstream.PushBack(helloFilter)
 
@@ -32,6 +36,6 @@ func main() {
 	}
 }
 
-var helloFilter = falcore.NewRequestFilter(func(req *falcore.Request) *http.Response {
-	return falcore.SimpleResponse(req.HttpRequest, 200, nil, "hello world!")
+var helloFilter = filter.NewRequestFilter(func(req *filter.Request) *http.Response {
+	return filter.SimpleResponse(req.HttpRequest, 200, nil, "hello world!")
 })

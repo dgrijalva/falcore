@@ -4,8 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/ngmoco/falcore"
-	"github.com/ngmoco/falcore/compression"
-	"github.com/ngmoco/falcore/static_file"
+	"github.com/ngmoco/falcore/filter"
 	"net/http"
 )
 
@@ -22,22 +21,23 @@ func main() {
 	// setup pipeline
 	pipeline := falcore.NewPipeline()
 
-	// upstream filters
+	// set logger
+	filter.SetLogger(falcore.GetLogger())
 
 	// Serve index.html for root requests
-	pipeline.Upstream.PushBack(falcore.NewRequestFilter(func(req *falcore.Request) *http.Response {
+	pipeline.Upstream.PushBack(filter.NewRequestFilter(func(req *filter.Request) *http.Response {
 		if req.HttpRequest.URL.Path == "/" {
 			req.HttpRequest.URL.Path = "/index.html"
 		}
 		return nil
 	}))
 	// Serve files
-	pipeline.Upstream.PushBack(&static_file.Filter{
+	pipeline.Upstream.PushBack(&filter.FileFilter{
 		BasePath: *path,
 	})
 
 	// downstream
-	pipeline.Downstream.PushBack(compression.NewFilter(nil))
+	pipeline.Downstream.PushBack(filter.NewCompressionFilter(nil))
 
 	// setup server
 	server := falcore.NewServer(*port, pipeline)

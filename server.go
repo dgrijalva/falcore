@@ -6,6 +6,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/ngmoco/falcore/buffer"
+	"github.com/ngmoco/falcore/filter"
 	"io"
 	"net"
 	"net/http"
@@ -28,7 +30,7 @@ type Server struct {
 	AcceptReady      chan int
 	sendfile         bool
 	sockOpt          int
-	bufferPool       *bufferPool
+	bufferPool       *buffer.Pool
 }
 
 func NewServer(port int, pipeline *Pipeline) *Server {
@@ -55,7 +57,7 @@ func NewServer(port int, pipeline *Pipeline) *Server {
 	}
 
 	// buffer pool for reusing connection bufio.Readers
-	s.bufferPool = newBufferPool(100, 8192)
+	s.bufferPool = buffer.NewPool(100, 8192)
 
 	return s
 }
@@ -192,8 +194,8 @@ func (srv *Server) sentinel(c net.Conn, connClosed chan int) {
 
 func (srv *Server) handler(c net.Conn) {
 	startTime := time.Now()
-	bpe := srv.bufferPool.take(c)
-	defer srv.bufferPool.give(bpe)
+	bpe := srv.bufferPool.Take(c)
+	defer srv.bufferPool.Give(bpe)
 	var closeSentinelChan = make(chan int)
 	go srv.sentinel(c, closeSentinelChan)
 	defer srv.connectionFinished(c, closeSentinelChan)
@@ -203,25 +205,25 @@ func (srv *Server) handler(c net.Conn) {
 	reqCount := 0
 	keepAlive := true
 	for err == nil && keepAlive {
-		if req, err = http.ReadRequest(bpe.br); err == nil {
+		if req, err = http.ReadRequest(bpe.Br); err == nil {
 			if req.Header.Get("Connection") != "Keep-Alive" {
 				keepAlive = false
 			}
-			request := newRequest(req, c, startTime)
+			request := filter.NewRequest(req, c, startTime)
 			reqCount++
 			var res *http.Response
 
-			pssInit := new(PipelineStageStat)
+			pssInit := new(filter.PipelineStageStat)
 			pssInit.Name = "server.Init"
 			pssInit.StartTime = startTime
 			pssInit.EndTime = time.Now()
-			request.appendPipelineStage(pssInit)
+			request.AppendPipelineStage(pssInit)
 			// execute the pipeline
 			if res = srv.Pipeline.execute(request); res == nil {
-				res = SimpleResponse(req, 404, nil, "Not Found")
+				res = filter.SimpleResponse(req, 404, nil, "Not Found")
 			}
 			// cleanup
-			request.startPipelineStage("server.ResponseWrite")
+			request.StartPipelineStage("server.ResponseWrite")
 			req.Body.Close()
 
 			// shutting down?
@@ -257,8 +259,8 @@ func (srv *Server) handler(c net.Conn) {
 			if res.Body != nil {
 				res.Body.Close()
 			}
-			request.finishPipelineStage()
-			request.finishRequest()
+			request.FinishPipelineStage()
+			request.FinishRequest()
 			srv.requestFinished(request)
 			// Reset the startTime
 			// this isn't great since there may be lag between requests; but it's the best we've got
@@ -277,7 +279,7 @@ func (srv *Server) serverLogPrefix() string {
 	return srv.logPrefix
 }
 
-func (srv *Server) requestFinished(request *Request) {
+func (srv *Server) requestFinished(request *filter.Request) {
 	if srv.Pipeline.RequestDoneCallback != nil {
 		// Don't block the connecion for this
 		go srv.Pipeline.RequestDoneCallback.FilterRequest(request)
