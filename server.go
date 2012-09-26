@@ -168,7 +168,7 @@ func (srv *Server) serve() (e error) {
 		} else {
 			//Trace("Handling!")
 			srv.handlerWaitGroup.Add(1)
-			go srv.handler(c)
+			srv.handleNewConn(c)
 		}
 		select {
 		case <-srv.stopAccepting:
@@ -180,6 +180,22 @@ func (srv *Server) serve() (e error) {
 	// wait for handlers
 	srv.handlerWaitGroup.Wait()
 	return nil
+}
+
+func (srv *Server) handleNewConn(c net.Conn){
+	fmt.Printf("Connected: %T", c)
+	if tlsConn, ok := c.(*tls.Conn); ok {
+		if err := tlsConn.Handshake(); err != nil {
+			srv.connectionFinished(c, nil)
+			return
+		}
+		fmt.Println(tlsConn.ConnectionState())
+		if tlsConn.ConnectionState().NegotiatedProtocol == "spdy/2" {
+			go srv.spdyHandler(c)
+			return
+		}
+	}
+	go srv.handler(c)
 }
 
 func (srv *Server) sentinel(c net.Conn, connClosed chan int) {
@@ -292,6 +308,8 @@ func (srv *Server) requestFinished(request *Request) {
 
 func (srv *Server) connectionFinished(c net.Conn, closeChan chan int) {
 	c.Close()
-	close(closeChan)
+	if closeChan != nil {
+		close(closeChan)
+	}
 	srv.handlerWaitGroup.Done()
 }
