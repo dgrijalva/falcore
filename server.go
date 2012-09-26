@@ -112,7 +112,7 @@ func (srv *Server) ListenAndServeTLS(certFile, keyFile string) error {
 	config := &tls.Config{
 		Rand:       rand.Reader,
 		Time:       time.Now,
-		NextProtos: []string{"http/1.1"},
+		NextProtos: []string{"spdy/2", "http/1.1"},
 	}
 
 	var err error
