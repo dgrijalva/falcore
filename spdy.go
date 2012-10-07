@@ -8,6 +8,11 @@ import (
 	"code.google.com/p/go.net/spdy"
 )
 
+// Goroutines:
+//   1 for network reading & session control
+//   1 for network writing (to not block reader while sending)
+//   1 per active session
+
 type spdyConnection struct {
 	conn net.Conn
 	framer *spdy.Framer
@@ -17,6 +22,7 @@ type spdyConnection struct {
 	closeOnce *sync.Once
 	goaway bool
 	lastAcceptedStream uint32
+	lock *sync.RWMutex
 }
 
 func (srv *Server) spdyHandler(c net.Conn){
@@ -37,6 +43,7 @@ func (srv *Server) spdyHandler(c net.Conn){
 	session.closeChan = make(chan int)
 	session.closeOnce = new(sync.Once)
 	session.goaway = false
+	session.lock = new(sync.RWMutex)
 	
 	go srv.spdyWriter(session)
 	defer func(){
@@ -49,7 +56,8 @@ func (srv *Server) spdyHandler(c net.Conn){
 	srv.spdyReader(session)
 }
 
-func (srv *Server) spdyHandleStream(f *spdyConnection, fchan chan spdy.Frame) {
+func (srv *Server) spdyHandleStream(session *spdyConnection, streamId uint32, fchan chan spdy.Frame) {
+	defer session.deregisterStream(streamId)
 	for {
 		_, ok := <- fchan
 		if ok {
@@ -70,6 +78,28 @@ func (session *spdyConnection) send(frame spdy.Frame)bool {
 	return false
 }
 
+func (session *spdyConnection) registerStream(streamId uint32, fchan chan spdy.Frame) {
+	session.lock.Lock()
+	defer session.lock.Unlock()
+
+	session.streams[streamId] = fchan
+	if streamId > session.lastAcceptedStream {
+		session.lastAcceptedStream = streamId
+	}
+}
+
+func (session *spdyConnection) lookupStream(streamId uint32)(chan spdy.Frame) {
+	session.lock.RLock()
+	defer session.lock.RUnlock()
+	return session.streams[streamId]
+}
+
+func (session *spdyConnection) deregisterStream(streamId uint32) {
+	session.lock.Lock()
+	defer session.lock.Unlock()
+	delete(session.streams, streamId)
+}
+
 func (srv *Server) spdyReader(session *spdyConnection) {
 	var frame spdy.Frame
 	var err error
@@ -86,9 +116,8 @@ func (srv *Server) spdyReader(session *spdyConnection) {
 			case *spdy.SynStreamFrame:
 				if !session.goaway {
 					c := make(chan spdy.Frame)
-					session.streams[fr.StreamId] = c
-					session.lastAcceptedStream = fr.StreamId
-					go srv.spdyHandleStream(session, c)
+					session.registerStream(fr.StreamId, c)
+					go srv.spdyHandleStream(session, fr.StreamId, c)
 					c <- frame
 				}
 			}
