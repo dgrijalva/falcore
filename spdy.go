@@ -3,6 +3,7 @@ package falcore
 import (
 	"net"
 	"time"
+	"sync"
 
 	"code.google.com/p/go.net/spdy"
 )
@@ -13,7 +14,9 @@ type spdyConnection struct {
 	streams map[uint32]chan spdy.Frame
 	sendChan chan spdy.Frame
 	closeChan chan int
+	closeOnce *sync.Once
 	goaway bool
+	lastAcceptedStream uint32
 }
 
 func (srv *Server) spdyHandler(c net.Conn){
@@ -32,10 +35,16 @@ func (srv *Server) spdyHandler(c net.Conn){
 	session.streams = make(map[uint32]chan spdy.Frame)
 	session.sendChan = make(chan spdy.Frame)
 	session.closeChan = make(chan int)
+	session.closeOnce = new(sync.Once)
 	session.goaway = false
 	
 	go srv.spdyWriter(session)
-	defer srv.connectionFinished(c, session.closeChan)
+	defer func(){
+		srv.connectionFinished(c, nil)
+		session.closeOnce.Do(func(){
+			close(session.closeChan)
+		})
+	}()
 	
 	srv.spdyReader(session)
 }
@@ -51,6 +60,16 @@ func (srv *Server) spdyHandleStream(f *spdyConnection, fchan chan spdy.Frame) {
 	}
 }
 
+// send using select incase writer is already shutdown
+func (session *spdyConnection) send(frame spdy.Frame)bool {
+	select {
+	case session.sendChan <- frame:
+		return true
+	case <-session.closeChan:
+	}
+	return false
+}
+
 func (srv *Server) spdyReader(session *spdyConnection) {
 	var frame spdy.Frame
 	var err error
@@ -63,15 +82,18 @@ func (srv *Server) spdyReader(session *spdyConnection) {
 			case *spdy.GoAwayFrame:
 				session.goaway = true
 			case *spdy.PingFrame:
-				session.sendChan <- frame
+				session.send(frame)
 			case *spdy.SynStreamFrame:
 				if !session.goaway {
 					c := make(chan spdy.Frame)
 					session.streams[fr.StreamId] = c
+					session.lastAcceptedStream = fr.StreamId
 					go srv.spdyHandleStream(session, c)
 					c <- frame
 				}
 			}
+		} else {
+			// Error performing framer operation
 		}
 		if session.goaway && len(session.streams) == 0 {
 			keepalive = false
@@ -80,10 +102,23 @@ func (srv *Server) spdyReader(session *spdyConnection) {
 }
 
 func (srv *Server) spdyWriter(session *spdyConnection) {
-	select {
-	case <-srv.stopAccepting:
-		// TODO: send goaway frame, etc
-		session.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	// case <-connClosed:
+	for {
+		select {
+		case <-srv.stopAccepting:
+			// TODO: send goaway frame, etc
+			session.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		case frame := <-session.sendChan:
+			// Attempt to write frame to the wire
+			if err := session.framer.WriteFrame(frame); err != nil {
+				// close the close chan to signal we're done
+				session.closeOnce.Do(func(){
+					close(session.closeChan)
+				})
+			}
+		case <-session.closeChan:
+			srv.connectionFinished(session.conn, nil)
+			// aaand we're done.  reader goroutine will close up
+			return
+		}
 	}
 }
