@@ -122,7 +122,7 @@ func (srv *Server) spdyReader(session *spdyConnection) {
 				}
 			}
 		} else {
-			// Error performing framer operation
+			// TODO: Error performing framer operation
 		}
 		if session.goaway && len(session.streams) == 0 {
 			keepalive = false
