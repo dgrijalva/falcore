@@ -3,11 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
-	"http"
-
-	"falcore"
-	"falcore/static_file"
-	"falcore/compression"
+	"github.com/ngmoco/falcore"
+	"github.com/ngmoco/falcore/compression"
+	"github.com/ngmoco/falcore/static_file"
+	"net/http"
 )
 
 // Command line options

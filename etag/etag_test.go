@@ -1,17 +1,16 @@
 package etag
 
 import (
-	"falcore"
-	"time"
-	"http"
-	"testing"
-	"os"
-	"net"
-	"fmt"
 	"bufio"
-	"io"
-	"path"
 	"bytes"
+	"fmt"
+	"github.com/ngmoco/falcore"
+	"io"
+	"net"
+	"net/http"
+	"path"
+	"testing"
+	"time"
 )
 
 var srv *falcore.Server
@@ -99,7 +98,7 @@ var testData = []struct {
 	},
 }
 
-func get(p string, etag string) (r *http.Response, err os.Error) {
+func get(p string, etag string) (r *http.Response, err error) {
 	var conn net.Conn
 	if conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%v", port())); err == nil {
 		req, _ := http.NewRequest("GET", fmt.Sprintf("http://%v", path.Join(fmt.Sprintf("localhost:%v/", port()), p)), nil)

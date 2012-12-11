@@ -1,18 +1,17 @@
 package static_file
 
 import (
-	"testing"
-	"falcore"
-	"os"
-	"http"
-	"strings"
-	"fmt"
-	"io/ioutil"
-	"io"
 	"bytes"
-	"time"
-	"mime"
+	"fmt"
+	"github.com/ngmoco/falcore"
+	"io"
+	"io/ioutil"
 	"log"
+	"mime"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
 )
 
 var srv *falcore.Server
@@ -24,6 +23,8 @@ func init() {
 	// setup mime
 	mime.AddExtensionType(".foo", "foo/bar")
 	mime.AddExtensionType(".json", "application/json")
+	mime.AddExtensionType(".txt", "text/plain")
+	mime.AddExtensionType(".png", "image/png")
 
 	go func() {
 
@@ -47,7 +48,7 @@ func port() int {
 	return srv.Port()
 }
 
-func get(p string) (r *http.Response, err os.Error) {
+func get(p string) (r *http.Response, err error) {
 	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%v", fmt.Sprintf("localhost:%v/", port())), nil)
 	req.URL.Path = p
 	r, err = http.DefaultTransport.RoundTrip(req)

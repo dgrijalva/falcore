@@ -1,12 +1,12 @@
 package main
 
 import (
-	"falcore"
-	"fmt"
-	"http"
 	"flag"
-	"os/signal"
+	"fmt"
+	"github.com/ngmoco/falcore"
+	"net/http"
 	"os"
+	"os/signal"
 	"syscall"
 )
 
@@ -64,12 +64,12 @@ func childReady(srv *falcore.Server) {
 
 // setup and fork/exec myself. Make sure to keep open important FD's that won't get re-created by the child
 // specifically, std* and your listen socket
-func forker(srv *falcore.Server) (pid int, err int) {
+func forker(srv *falcore.Server) (pid int, err error) {
 	fmt.Printf("Forking now with socket: %v\n", srv.SocketFd())
 	mypath := os.Args[0]
 	args := []string{mypath, "-socket", fmt.Sprintf("%v", srv.SocketFd())}
 	attr := new(syscall.ProcAttr)
-	attr.Files = append([]int(nil), 0, 1, 2, srv.SocketFd())
+	attr.Files = append([]uintptr(nil), 0, 1, 2, uintptr(srv.SocketFd()))
 	pid, err = syscall.ForkExec(mypath, args, attr)
 	return
 }
@@ -77,32 +77,32 @@ func forker(srv *falcore.Server) (pid int, err int) {
 // Handle lifecycle events
 func handleSignals(srv *falcore.Server) {
 	var sig os.Signal
+	var sigChan = make(chan os.Signal)
+	signal.Notify(sigChan, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGINT, syscall.SIGTERM, syscall.SIGTSTP)
 	pid := syscall.Getpid()
 	for {
-		sig = <-signal.Incoming
-		if usig, ok := sig.(os.UnixSignal); ok {
-			switch usig {
-			case os.SIGHUP:
-				// send this to the paraent process to initiate the restart
-				fmt.Println(pid, "Received SIGHUP.  forking.")
-				cpid, err := forker(srv)
-				fmt.Println(pid, "Forked pid:", cpid, "errno:", err)
-			case os.SIGUSR1:
-				// child sends this back to the parent when it's ready to Accept
-				fmt.Println(pid, "Received SIGUSR1.  Stopping accept.")
-				srv.StopAccepting()
-			case os.SIGINT:
-				fmt.Println(pid, "Received SIGINT.  Shutting down.")
-				os.Exit(0)
-			case os.SIGTERM:
-				fmt.Println(pid, "Received SIGTERM.  Terminating.")
-				os.Exit(0)
-			case os.SIGTSTP:
-				fmt.Println(pid, "Received SIGTSTP.  Stopping.")
-				syscall.Kill(pid, syscall.SIGSTOP)
-			default:
-				fmt.Println(pid, "Received", sig, ": ignoring")
-			}
+		sig = <-sigChan
+		switch sig {
+		case syscall.SIGHUP:
+			// send this to the paraent process to initiate the restart
+			fmt.Println(pid, "Received SIGHUP.  forking.")
+			cpid, err := forker(srv)
+			fmt.Println(pid, "Forked pid:", cpid, "errno:", err)
+		case syscall.SIGUSR1:
+			// child sends this back to the parent when it's ready to Accept
+			fmt.Println(pid, "Received SIGUSR1.  Stopping accept.")
+			srv.StopAccepting()
+		case syscall.SIGINT:
+			fmt.Println(pid, "Received SIGINT.  Shutting down.")
+			os.Exit(0)
+		case syscall.SIGTERM:
+			fmt.Println(pid, "Received SIGTERM.  Terminating.")
+			os.Exit(0)
+		case syscall.SIGTSTP:
+			fmt.Println(pid, "Received SIGTSTP.  Stopping.")
+			syscall.Kill(pid, syscall.SIGSTOP)
+		default:
+			fmt.Println(pid, "Received", sig, ": ignoring")
 		}
 	}
 }

@@ -1,17 +1,16 @@
 package compression
 
 import (
-	"http"
-	"strings"
 	"bytes"
-	"io"
-	"os"
-	"compress/gzip"
 	"compress/flate"
-	"falcore"
+	"compress/gzip"
+	"github.com/ngmoco/falcore"
+	"io"
+	"net/http"
+	"strings"
 )
 
-var DefaultTypes = []string{"text/plain", "test/html", "application/json", "text/xml"}
+var DefaultTypes = []string{"text/plain", "text/html", "application/json", "text/xml"}
 
 type Filter struct {
 	types []string
@@ -65,9 +64,15 @@ func (c *Filter) FilterResponse(request *falcore.Request, res *http.Response) {
 		var buf = bytes.NewBuffer(make([]byte, 0, 1024))
 		switch mode {
 		case "gzip":
-			compressor, _ = gzip.NewWriter(buf)
+			compressor = gzip.NewWriter(buf)
 		case "deflate":
-			compressor = flate.NewWriter(buf, -1)
+			comp, err := flate.NewWriter(buf, -1)
+			if err != nil {
+				falcore.Error("Compression Error: %v", err)
+				request.CurrentStage.Status = 1 // Skip
+				return
+			}
+			compressor = comp
 		default:
 			request.CurrentStage.Status = 1 // Skip
 			return
@@ -75,7 +80,7 @@ func (c *Filter) FilterResponse(request *falcore.Request, res *http.Response) {
 
 		// Perform compression
 		r := make([]byte, 1024)
-		var err os.Error
+		var err error
 		var i int
 		for err == nil {
 			i, err = res.Body.Read(r)
@@ -96,11 +101,11 @@ func (c *Filter) FilterResponse(request *falcore.Request, res *http.Response) {
 
 type filteredBody bytes.Buffer
 
-func (b *filteredBody) Read(byt []byte) (int, os.Error) {
+func (b *filteredBody) Read(byt []byte) (int, error) {
 	i, err := (*bytes.Buffer)(b).Read(byt)
 	return i, err
 }
 
-func (b filteredBody) Close() os.Error {
+func (b filteredBody) Close() error {
 	return nil
 }

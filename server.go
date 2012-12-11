@@ -1,18 +1,20 @@
 package falcore
 
 import (
-	"http"
-	"fmt"
-	"os"
-	"net"
 	"bufio"
-	"time"
-	"io"
 	"crypto/rand"
 	"crypto/tls"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type Server struct {
@@ -24,6 +26,9 @@ type Server struct {
 	handlerWaitGroup *sync.WaitGroup
 	logPrefix        string
 	AcceptReady      chan int
+	sendfile         bool
+	sockOpt          int
+	bufferPool       *bufferPool
 }
 
 func NewServer(port int, pipeline *Pipeline) *Server {
@@ -34,26 +39,42 @@ func NewServer(port int, pipeline *Pipeline) *Server {
 	s.AcceptReady = make(chan int, 1)
 	s.handlerWaitGroup = new(sync.WaitGroup)
 	s.logPrefix = fmt.Sprintf("%d", syscall.Getpid())
+
+	// openbsd/netbsd don't have TCP_NOPUSH so it's likely sendfile will be slower
+	// without these socket options, just enable for linux, mac and freebsd.
+	// TODO (Graham) windows has TransmitFile zero-copy mechanism, try to use it
+	switch runtime.GOOS {
+	case "linux":
+		s.sendfile = true
+		s.sockOpt = 0x3 // syscall.TCP_CORK
+	case "freebsd", "darwin":
+		s.sendfile = true
+		s.sockOpt = 0x4 // syscall.TCP_NOPUSH
+	default:
+		s.sendfile = false
+	}
+
+	// buffer pool for reusing connection bufio.Readers
+	s.bufferPool = newBufferPool(100, 8192)
+
 	return s
 }
 
-func (srv *Server) FdListen(fd int) os.Error {
-	var err os.Error
-	srv.listenerFile = os.NewFile(fd, "")
+func (srv *Server) FdListen(fd int) error {
+	var err error
+	srv.listenerFile = os.NewFile(uintptr(fd), "")
 	if srv.listener, err = net.FileListener(srv.listenerFile); err != nil {
 		return err
 	}
-	if l, ok := srv.listener.(*net.TCPListener); ok {
-		l.SetTimeout(3e9)
-	} else {
-		return os.NewError("Broken listener isn't TCP")
+	if _, ok := srv.listener.(*net.TCPListener); !ok {
+		return errors.New("Broken listener isn't TCP")
 	}
 	return nil
 }
 
-func (srv *Server) socketListen() os.Error {
+func (srv *Server) socketListen() error {
 	var la *net.TCPAddr
-	var err os.Error
+	var err error
 	if la, err = net.ResolveTCPAddr("tcp", srv.Addr); err != nil {
 		return err
 	}
@@ -63,17 +84,12 @@ func (srv *Server) socketListen() os.Error {
 		return err
 	}
 	srv.listener = l
-	if srv.listenerFile, err = l.File(); err != nil {
-		return err
-	}
-	if e := syscall.SetNonblock(srv.listenerFile.Fd(), true); e != 0 {
-		return os.Errno(e)
-	}
-	l.SetTimeout(3e9)
-	return nil
+	// setup listener to be non-blocking if we're not on windows.
+	// this is required for hot restart to work.
+	return srv.setupNonBlockingListener(err, l)
 }
 
-func (srv *Server) ListenAndServe() os.Error {
+func (srv *Server) ListenAndServe() error {
 	if srv.Addr == "" {
 		srv.Addr = ":http"
 	}
@@ -86,20 +102,20 @@ func (srv *Server) ListenAndServe() os.Error {
 }
 
 func (srv *Server) SocketFd() int {
-	return srv.listenerFile.Fd()
+	return int(srv.listenerFile.Fd())
 }
 
-func (srv *Server) ListenAndServeTLS(certFile, keyFile string) os.Error {
+func (srv *Server) ListenAndServeTLS(certFile, keyFile string) error {
 	if srv.Addr == "" {
 		srv.Addr = ":https"
 	}
 	config := &tls.Config{
 		Rand:       rand.Reader,
-		Time:       time.Seconds,
+		Time:       time.Now,
 		NextProtos: []string{"http/1.1"},
 	}
 
-	var err os.Error
+	var err error
 	config.Certificates = make([]tls.Certificate, 1)
 	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -118,7 +134,7 @@ func (srv *Server) ListenAndServeTLS(certFile, keyFile string) os.Error {
 }
 
 func (srv *Server) StopAccepting() {
-	srv.stopAccepting <- 1
+	close(srv.stopAccepting)
 }
 
 func (srv *Server) Port() int {
@@ -132,11 +148,14 @@ func (srv *Server) Port() int {
 	return 0
 }
 
-func (srv *Server) serve() (e os.Error) {
+func (srv *Server) serve() (e error) {
 	var accept = true
 	srv.AcceptReady <- 1
 	for accept {
 		var c net.Conn
+		if l, ok := srv.listener.(*net.TCPListener); ok {
+			l.SetDeadline(time.Now().Add(3e9))
+		}
 		c, e = srv.listener.Accept()
 		if e != nil {
 			if ope, ok := e.(*net.OpError); ok {
@@ -163,20 +182,28 @@ func (srv *Server) serve() (e os.Error) {
 	return nil
 }
 
-func (srv *Server) handler(c net.Conn) {
-	startTime := time.Nanoseconds()
-	defer srv.connectionFinished(c)
-	buf, err := bufio.NewReaderSize(c, 8192)
-	if err != nil {
-		Error("%s Read buffer fail: %v", srv.serverLogPrefix(), err)
-		return
+func (srv *Server) sentinel(c net.Conn, connClosed chan int) {
+	select {
+	case <-srv.stopAccepting:
+		c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	case <-connClosed:
 	}
+}
+
+func (srv *Server) handler(c net.Conn) {
+	startTime := time.Now()
+	bpe := srv.bufferPool.take(c)
+	defer srv.bufferPool.give(bpe)
+	var closeSentinelChan = make(chan int)
+	go srv.sentinel(c, closeSentinelChan)
+	defer srv.connectionFinished(c, closeSentinelChan)
+	var err error
 	var req *http.Request
 	// no keepalive (for now)
 	reqCount := 0
 	keepAlive := true
 	for err == nil && keepAlive {
-		if req, err = http.ReadRequest(buf); err == nil {
+		if req, err = http.ReadRequest(bpe.br); err == nil {
 			if req.Header.Get("Connection") != "Keep-Alive" {
 				keepAlive = false
 			}
@@ -187,7 +214,7 @@ func (srv *Server) handler(c net.Conn) {
 			pssInit := new(PipelineStageStat)
 			pssInit.Name = "server.Init"
 			pssInit.StartTime = startTime
-			pssInit.EndTime = time.Nanoseconds()
+			pssInit.EndTime = time.Now()
 			request.appendPipelineStage(pssInit)
 			// execute the pipeline
 			if res = srv.Pipeline.execute(request); res == nil {
@@ -196,19 +223,56 @@ func (srv *Server) handler(c net.Conn) {
 			// cleanup
 			request.startPipelineStage("server.ResponseWrite")
 			req.Body.Close()
-			wbuf := bufio.NewWriter(c)
-			res.Write(wbuf)
-			wbuf.Flush()
+
+			// shutting down?
+			select {
+			case <-srv.stopAccepting:
+				keepAlive = false
+				res.Close = true
+			default:
+			}
+			// The res.Write omits Content-length on 0 length bodies, and by spec, 
+			// it SHOULD. While this is not MUST, it's kinda broken.  See sec 4.4 
+			// of rfc2616 and a 200 with a zero length does not satisfy any of the
+			// 5 conditions if Connection: keep-alive is set :(
+			// I'm forcing chunked which seems to work because I couldn't get the
+			// content length to write if it was 0.
+			// Specifically, the android http client waits forever if there's no
+			// content-length instead of assuming zero at the end of headers. der.
+			if res.ContentLength == 0 && len(res.TransferEncoding) == 0 && !((res.StatusCode-100 < 100) || res.StatusCode == 204 || res.StatusCode == 304) {
+				res.TransferEncoding = []string{"identity"}
+			}
+			if res.ContentLength < 0 {
+				res.TransferEncoding = []string{"chunked"}
+			}
+
+			// write response
+			if srv.sendfile {
+				res.Write(c)
+				srv.cycleNonBlock(c)
+			} else {
+				wbuf := bufio.NewWriter(c)
+				res.Write(wbuf)
+				wbuf.Flush()
+			}
 			if res.Body != nil {
 				res.Body.Close()
 			}
 			request.finishPipelineStage()
 			request.finishRequest()
 			srv.requestFinished(request)
+
+			if res.Close {
+				keepAlive = false
+			}
+
+			// Reset the startTime
+			// this isn't great since there may be lag between requests; but it's the best we've got
+			startTime = time.Now()
 		} else {
 			// EOF is socket closed
-			if err != io.ErrUnexpectedEOF {
-				Error("%s %v ERROR reading request: %v", srv.serverLogPrefix(), c.RemoteAddr(), err)
+			if nerr, ok := err.(net.Error); err != io.EOF && !(ok && nerr.Timeout()) {
+				Error("%s %v ERROR reading request: <%T %v>", srv.serverLogPrefix(), c.RemoteAddr(), err, err)
 			}
 		}
 	}
@@ -226,7 +290,8 @@ func (srv *Server) requestFinished(request *Request) {
 	}
 }
 
-func (srv *Server) connectionFinished(c net.Conn) {
+func (srv *Server) connectionFinished(c net.Conn, closeChan chan int) {
 	c.Close()
+	close(closeChan)
 	srv.handlerWaitGroup.Done()
 }

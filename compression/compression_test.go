@@ -1,19 +1,18 @@
 package compression
 
 import (
-	"falcore"
-	"http"
 	"bufio"
-	"testing"
-	"os"
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
-	"path"
+	"github.com/ngmoco/falcore"
 	"io"
 	"io/ioutil"
-	"bytes"
-	"compress/gzip"
-	"compress/flate"
 	"net"
+	"net/http"
+	"path"
+	"testing"
 	"time"
 )
 
@@ -132,7 +131,7 @@ var testData = []struct {
 
 func compress_gzip(body []byte) []byte {
 	buf := new(bytes.Buffer)
-	comp, _ := gzip.NewWriter(buf)
+	comp := gzip.NewWriter(buf)
 	comp.Write(body)
 	comp.Close()
 	b := buf.Bytes()
@@ -142,7 +141,10 @@ func compress_gzip(body []byte) []byte {
 
 func compress_deflate(body []byte) []byte {
 	buf := new(bytes.Buffer)
-	comp := flate.NewWriter(buf, -1)
+	comp, err := flate.NewWriter(buf, -1)
+	if err != nil {
+		panic(fmt.Sprintf("Error using compress/flate.NewWriter() %v", err))
+	}
 	comp.Write(body)
 	comp.Close()
 	b := buf.Bytes()
@@ -159,7 +161,7 @@ func readfile(path string) []byte {
 	return nil
 }
 
-func get(p string, accept string) (r *http.Response, err os.Error) {
+func get(p string, accept string) (r *http.Response, err error) {
 	var conn net.Conn
 	if conn, err = net.Dial("tcp", fmt.Sprintf("localhost:%v", port())); err == nil {
 		req, _ := http.NewRequest("GET", fmt.Sprintf("http://%v", path.Join(fmt.Sprintf("localhost:%v/", port()), p)), nil)

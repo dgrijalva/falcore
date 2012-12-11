@@ -1,13 +1,19 @@
 package upstream
 
 import (
-	"http"
-	"os"
-	"net"
+	"bytes"
 	"fmt"
+	"github.com/ngmoco/falcore"
+	"io"
+	"net"
+	"net/http"
 	"time"
-	"falcore"
 )
+
+type passThruReadCloser struct {
+	io.Reader
+	io.Closer
+}
 
 type Upstream struct {
 	// The upstream host to connect to
@@ -15,7 +21,7 @@ type Upstream struct {
 	// The port on the upstream host
 	Port int
 	// Default 60 seconds
-	Timeout int64
+	Timeout time.Duration
 	// Will ignore https on the incoming request and always upstream http
 	ForceHttp bool
 	// Ping URL Path-only for checking upness
@@ -24,6 +30,7 @@ type Upstream struct {
 	transport *http.Transport
 	host      string
 	tcpaddr   *net.TCPAddr
+	tcpconn   *net.TCPConn
 }
 
 func NewUpstream(host string, port int, forceHttp bool) *Upstream {
@@ -50,12 +57,14 @@ func NewUpstream(host string, port int, forceHttp bool) *Upstream {
 	u.host = fmt.Sprintf("%v:%v", u.Host, u.Port)
 
 	u.transport = new(http.Transport)
-	u.transport.Dial = func(n, addr string) (c net.Conn, err os.Error) {
+
+	u.transport.Dial = func(n, addr string) (c net.Conn, err error) {
 		falcore.Fine("Dialing connection to %v", u.tcpaddr)
 		var ctcp *net.TCPConn
 		ctcp, err = net.DialTCP("tcp4", nil, u.tcpaddr)
 		if ctcp != nil {
-			ctcp.SetTimeout(u.Timeout)
+			u.tcpconn = ctcp
+			u.tcpconn.SetDeadline(time.Now().Add(u.Timeout))
 		}
 		if err != nil {
 			falcore.Error("Dial Failed: %v", err)
@@ -72,7 +81,7 @@ func (u *Upstream) SetPoolSize(size int) {
 }
 
 func (u *Upstream) FilterRequest(request *falcore.Request) (res *http.Response) {
-	var err os.Error
+	var err error
 	req := request.HttpRequest
 
 	// Force the upstream to use http 
@@ -80,11 +89,52 @@ func (u *Upstream) FilterRequest(request *falcore.Request) (res *http.Response) 
 		req.URL.Scheme = "http"
 		req.URL.Host = req.Host
 	}
-	before := time.Nanoseconds()
+	before := time.Now()
 	req.Header.Set("Connection", "Keep-Alive")
-	res, err = u.transport.RoundTrip(req)
-	diff := falcore.TimeDiff(before, time.Nanoseconds())
-	if err != nil {
+	if u.tcpconn != nil {
+		u.tcpconn.SetDeadline(time.Now().Add(u.Timeout))
+	}
+	var upstrRes *http.Response
+	upstrRes, err = u.transport.RoundTrip(req)
+	diff := falcore.TimeDiff(before, time.Now())
+	if err == nil {
+		// Copy response over to new record.  Remove connection noise.  Add some sanity.
+		res = falcore.SimpleResponse(req, upstrRes.StatusCode, nil, "")
+		if upstrRes.ContentLength > 0 && upstrRes.Body != nil {
+			res.ContentLength = upstrRes.ContentLength
+			res.Body = upstrRes.Body
+		} else if upstrRes.ContentLength == 0 && upstrRes.Body != nil {
+			// Any bytes?
+			var testBuf [1]byte
+			n, _ := io.ReadFull(upstrRes.Body, testBuf[:])
+			if n == 1 {
+				// Yes there are.  Chunked it is.
+				res.TransferEncoding = []string{"chunked"}
+				res.ContentLength = -1
+				rc := &passThruReadCloser{
+					io.MultiReader(bytes.NewBuffer(testBuf[:]), upstrRes.Body),
+					upstrRes.Body,
+				}
+
+				res.Body = rc
+			}
+		} else if upstrRes.Body != nil {
+			res.Body = upstrRes.Body
+			res.ContentLength = -1
+			res.TransferEncoding = []string{"chunked"}
+		}
+		// Copy over headers with a few exceptions
+		res.Header = make(http.Header)
+		for hn, hv := range upstrRes.Header {
+			switch hn {
+			case "Content-Length":
+			case "Connection":
+			case "Transfer-Encoding":
+			default:
+				res.Header[hn] = hv
+			}
+		}
+	} else {
 		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
 			falcore.Error("%s Upstream Timeout error: %v", request.ID, err)
 			res = falcore.SimpleResponse(req, 504, nil, "Gateway Timeout\n")
@@ -95,7 +145,7 @@ func (u *Upstream) FilterRequest(request *falcore.Request) (res *http.Response) 
 			request.CurrentStage.Status = 2 // Fail
 		}
 	}
-	falcore.Debug("%s [%s] [%s%s] s=%d Time=%.4f", request.ID, req.Method, u.host, req.RawURL, res.StatusCode, diff)
+	falcore.Debug("%s [%s] [%s] %s s=%d Time=%.4f", request.ID, req.Method, u.host, req.URL, res.StatusCode, diff)
 	return
 }
 
@@ -108,6 +158,9 @@ func (u *Upstream) ping() (up bool, ok bool) {
 		if err != nil {
 			falcore.Error("Bad Ping request: %v", err)
 			return false, true
+		}
+		if u.tcpconn != nil {
+			u.tcpconn.SetDeadline(time.Now().Add(u.Timeout))
 		}
 		res, err := u.transport.RoundTrip(request)
 
