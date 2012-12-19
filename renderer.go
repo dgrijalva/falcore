@@ -6,10 +6,10 @@ import (
 	"os"
 	"template"
 	"bytes"
-	"http"
+	"net/http"
 	"mime"
 	"strings"
-	"json"
+	"encoding/json"
 )
 
 // Base interface for renderers
