@@ -26,9 +26,9 @@ func SetLogger(newLogger Logger) {
 	logger = newLogger
 }
 
-// Helper for calculating times
+// Helper for calculating times.  return value in Seconds
 func TimeDiff(startTime time.Time, endTime time.Time) float32 {
-	return float32(endTime.Sub(startTime)) / 1.0e9
+	return float32(endTime.Sub(startTime)) / float32(time.Second)
 }
 
 // Global Logging

@@ -34,7 +34,7 @@ func sumResponseFilter(*Request, *http.Response) {
 
 func successFilter(req *Request) *http.Response {
 	doStageTrack()
-	return SimpleResponse(req.HttpRequest, 200, nil, "OK")
+	return StringResponse(req.HttpRequest, 200, nil, "OK")
 }
 
 func TestPipelineNoResponse(t *testing.T) {
@@ -58,8 +58,8 @@ func TestPipelineNoResponse(t *testing.T) {
 			t.Errorf("Pipeline stages did not complete %v expected %v", sum, 3)
 		}
 	}
-	if response.StatusCode != 404 {
-		t.Errorf("Pipeline response code wrong: %v expected %v", response.StatusCode, 404)
+	if response != nil {
+		t.Errorf("Pipeline response shoulld be nil: %v expected nil", response)
 	}
 }
 

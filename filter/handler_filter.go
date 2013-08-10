@@ -1,9 +1,10 @@
-package falcore
+package filter
 
 import (
-	"net/http"
-	"io"
 	"fmt"
+	"github.com/fitstar/falcore"
+	"io"
+	"net/http"
 )
 
 // Implements a RequestFilter using a http.Handler to produce the response
@@ -13,11 +14,11 @@ type HandlerFilter struct {
 	handler http.Handler
 }
 
-func NewHandlerFilter(handler http.Handler) (*HandlerFilter) {
-	return &HandlerFilter{ handler: handler}
+func NewHandlerFilter(handler http.Handler) *HandlerFilter {
+	return &HandlerFilter{handler: handler}
 }
 
-func (h *HandlerFilter) FilterRequest(req *Request) *http.Response {
+func (h *HandlerFilter) FilterRequest(req *falcore.Request) *http.Response {
 	rw, respc := newPopulateResponseWriter(req.HttpRequest)
 	// this must be done concurrently so that the HandlerFunc can write the response
 	// while falcore is copying it to the socket
@@ -40,7 +41,7 @@ func newPopulateResponseWriter(req *http.Request) (*populateResponse, <-chan *ht
 			Header:     make(http.Header),
 			Close:      true,
 			Body:       pr,
-			Request:	    req,
+			Request:    req,
 		},
 	}
 	return rw, rw.ch
@@ -105,4 +106,3 @@ func (pr *populateResponse) Write(p []byte) (n int, err error) {
 	}
 	return pr.pw.Write(p)
 }
-

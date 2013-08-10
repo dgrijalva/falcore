@@ -1,10 +1,11 @@
-package falcore
+package filter
 
 import (
+	"fmt"
+	"github.com/fitstar/falcore"
+	"io/ioutil"
 	"net/http"
 	"testing"
-	"fmt"
-	"io/ioutil"
 )
 
 func TestHandlerFilter(t *testing.T) {
@@ -12,20 +13,20 @@ func TestHandlerFilter(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, reply)
 	}
-	
+
 	hff := NewHandlerFilter(http.HandlerFunc(handler))
 
 	tmp, _ := http.NewRequest("GET", "/hello", nil)
-	_, res := TestWithRequest(tmp, hff)
-	
+	_, res := falcore.TestWithRequest(tmp, hff, nil)
+
 	if res == nil {
 		t.Errorf("Response is nil")
 	}
-	
+
 	if replyGot, err := ioutil.ReadAll(res.Body); err != nil {
 		t.Errorf("Error reading body: %v", err)
 	} else if string(replyGot) != reply {
 		t.Errorf("Expected body does not match")
 	}
-	
+
 }

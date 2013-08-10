@@ -1,6 +1,8 @@
-package falcore
+package router
 
 import (
+	"bytes"
+	"github.com/fitstar/falcore"
 	"net/http"
 	"regexp"
 	"testing"
@@ -8,9 +10,15 @@ import (
 
 type SimpleFilter int
 
-func (sf SimpleFilter) FilterRequest(req *Request) *http.Response {
+func (sf SimpleFilter) FilterRequest(req *falcore.Request) *http.Response {
 	sf = -sf
 	return nil
+}
+
+func validGetRequest() (req *falcore.Request) {
+	tmp, _ := http.NewRequest("GET", "/hello", bytes.NewBuffer(make([]byte, 0)))
+	req, _ = falcore.TestWithRequest(tmp, falcore.NewRequestFilter(func(req *falcore.Request) *http.Response { return nil }), nil)
+	return
 }
 
 func TestRegexpRoute(t *testing.T) {

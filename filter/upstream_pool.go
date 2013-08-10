@@ -1,20 +1,11 @@
-package upstream
+package filter
 
 import (
-	"github.com/ngmoco/falcore"
+	"github.com/fitstar/falcore"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
-
-type UpstreamEntryConfig struct {
-	HostPort  string
-	Weight    int
-	ForceHttp bool
-	PingPath  string
-}
 
 type UpstreamEntry struct {
 	Upstream *Upstream
@@ -34,40 +25,21 @@ type UpstreamPool struct {
 	pinger       *time.Ticker
 }
 
-// The config consists of a map of the servers in the pool in the format host_or_ip:port 
+// The config consists of a map of the servers in the pool in the format host_or_ip:port
 // where port is optional and defaults to 80.  The map value is an int with the weight
 // only 0 and 1 are supported weights (0 disables a server and 1 enables it)
-func NewUpstreamPool(name string, config []UpstreamEntryConfig) *UpstreamPool {
+func NewUpstreamPool(name string, upstreams []*UpstreamEntry) *UpstreamPool {
 	up := new(UpstreamPool)
-	up.pool = make([]*UpstreamEntry, len(config))
 	up.Name = name
 	up.nextUpstream = make(chan *UpstreamEntry)
 	up.weightMutex = new(sync.RWMutex)
 	up.shutdown = make(chan int)
-	up.pinger = time.NewTicker(3e9) // 3s
+	up.pinger = time.NewTicker(3 * time.Second) // 3s
+	up.pool = upstreams
 
-	// create the pool
-	for i, uec := range config {
-		parts := strings.Split(uec.HostPort, ":")
-		upstreamHost := parts[0]
-		upstreamPort := 80
-		if len(parts) > 1 {
-			var err error
-			upstreamPort, err = strconv.Atoi(parts[1])
-			if err != nil {
-				upstreamPort = 80
-				falcore.Error("UpstreamPool Error converting port to int for", upstreamHost, ":", err)
-			}
-		}
-		ups := NewUpstream(upstreamHost, upstreamPort, uec.ForceHttp)
-		ups.PingPath = uec.PingPath
-		ue := new(UpstreamEntry)
-		ue.Upstream = ups
-		ue.Weight = uec.Weight
-		up.pool[i] = ue
-	}
 	go up.nextServer()
 	go up.pingUpstreams()
+
 	return up
 }
 
@@ -86,7 +58,7 @@ func (up UpstreamPool) LogStatus() {
 	up.weightMutex.RUnlock()
 	// Now do the logging
 	for i, ue := range up.pool {
-		falcore.Info("Upstream %v: %v:%v\t%v", up.Name, ue.Upstream.Host, ue.Upstream.Port, weightsBuffer[i])
+		falcore.Info("Upstream %v: %v:%v\t%v", up.Name, ue.Upstream.Transport.host, ue.Upstream.Transport.port, weightsBuffer[i])
 	}
 }
 

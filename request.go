@@ -8,41 +8,41 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"time"
 	"reflect"
+	"time"
 )
 
 // Request wrapper
-// 
-// The request is wrapped so that useful information can be kept 
-// with the request as it moves through the pipeline.  
+//
+// The request is wrapped so that useful information can be kept
+// with the request as it moves through the pipeline.
 //
 // A pointer is kept to the originating Connection.
 //
-// There is a unique ID assigned to each request.  This ID is not 
-// globally unique to keep it shorter for logging purposes.  It is 
-// possible to have duplicates though very unlikely over the period 
+// There is a unique ID assigned to each request.  This ID is not
+// globally unique to keep it shorter for logging purposes.  It is
+// possible to have duplicates though very unlikely over the period
 // of a day or so.  It is a good idea to log the ID in any custom
 // log statements so that individual requests can easily be grepped
 // from busy log files.
 //
-// Falcore collects performance statistics on every stage of the 
+// Falcore collects performance statistics on every stage of the
 // pipeline.  The stats for the request are kept in PipelineStageStats.
 // This structure will only be complete in the Request passed to the
 // pipeline RequestDoneCallback.  Overhead will only be available in
 // the RequestDoneCallback and it's the difference between the total
 // request time and the sums of the stage times.  It will include things
 // like pipeline iteration and the stat collection itself.
-// 
+//
 // See falcore.PipelineStageStat docs for more info.
-// 
-// The Signature is also a cool feature. See the 
+//
+// The Signature is also a cool feature. See the
 type Request struct {
 	ID                 string
 	StartTime          time.Time
 	EndTime            time.Time
 	HttpRequest        *http.Request
-	Connection         net.Conn
+	connection         net.Conn
 	RemoteAddr         *net.TCPAddr
 	PipelineStageStats *list.List
 	CurrentStage       *PipelineStageStat
@@ -58,27 +58,42 @@ func newRequest(request *http.Request, conn net.Conn, startTime time.Time) *Requ
 	fReq.Context = make(map[string]interface{})
 	fReq.HttpRequest = request
 	fReq.StartTime = startTime
-	fReq.Connection = conn
+	fReq.connection = conn
 	if conn != nil {
 		fReq.RemoteAddr = conn.RemoteAddr().(*net.TCPAddr)
 	}
+
 	// create a semi-unique id to track a connection in the logs
 	// ID is the least significant decimal digits of time with some randomization
-	// the last 3 zeros of time.Nanoseconds appear to always be zero		
+	// the last 3 zeros of time.Nanoseconds appear to always be zero
 	var ut = fReq.StartTime.UnixNano()
 	fReq.ID = fmt.Sprintf("%010x", (ut-(ut-(ut%1e12)))+int64(rand.Intn(999)))
 	fReq.PipelineStageStats = list.New()
 	fReq.pipelineHash = crc32.NewIEEE()
+
+	// Support for 100-continue requests
+	// http.Server (and presumably google app engine) already handle this
+	// case.  So we don't need to do anything if we don't own the
+	// connection.
+	if conn != nil && request.Header.Get("Expect") == "100-continue" {
+		request.Body = &continueReader{req: fReq, r: request.Body}
+	}
+
 	return fReq
 }
 
 // Returns a completed falcore.Request and response after running the single filter stage
-// The PipelineStageStats is completed in the returned Request 
+// The PipelineStageStats is completed in the returned Request
 // The falcore.Request.Connection and falcore.Request.RemoteAddr are nil
-func TestWithRequest(request *http.Request, filter RequestFilter) (*Request, *http.Response) {
+func TestWithRequest(request *http.Request, filter RequestFilter, context map[string]interface{}) (*Request, *http.Response) {
 	r := newRequest(request, nil, time.Now())
+	if context == nil {
+		context = make(map[string]interface{})
+	}
+	r.Context = context
 	t := reflect.TypeOf(filter)
 	r.startPipelineStage(t.String())
+	r.CurrentStage.Type = PipelineStageTypeUpstream
 	res := filter.FilterRequest(r)
 	r.finishPipelineStage()
 	r.finishRequest()
@@ -89,6 +104,7 @@ func TestWithRequest(request *http.Request, filter RequestFilter) (*Request, *ht
 func (fReq *Request) startPipelineStage(name string) {
 	fReq.CurrentStage = NewPiplineStage(name)
 	fReq.PipelineStageStats.PushBack(fReq.CurrentStage)
+	fReq.CurrentStage.Type = PipelineStageTypeOther
 }
 
 // Finishes the CurrentStage.
@@ -115,27 +131,27 @@ func (fReq *Request) finishCommon() {
 // any given time, the Signature is a crc32 sum of all the finished
 // pipeline stages combining PipelineStageStat.Name and PipelineStageStat.Status.
 // This gives a unique signature for each unique path through the pipeline.
-// To modify the signature for your own use, just set the 
+// To modify the signature for your own use, just set the
 // request.CurrentStage.Status in your RequestFilter or ResponseFilter.
 func (fReq *Request) Signature() string {
 	return fmt.Sprintf("%X", fReq.pipelineHash.Sum32())
 }
 
-// Call from RequestDoneCallback.  Logs a bunch of information about the 
-// request to the falcore logger. This is a pretty big hit to performance 
-// so it should only be used for debugging or development.  The source is a 
-// good example of how to get useful information out of the Request. 
-func (fReq *Request) Trace() {
+// Call from RequestDoneCallback.  Logs a bunch of information about the
+// request to the falcore logger. This is a pretty big hit to performance
+// so it should only be used for debugging or development.  The source is a
+// good example of how to get useful information out of the Request.
+func (fReq *Request) Trace(res *http.Response) {
 	reqTime := TimeDiff(fReq.StartTime, fReq.EndTime)
 	req := fReq.HttpRequest
-	Trace("%s [%s] %s%s Sig=%s Tot=%.4f", fReq.ID, req.Method, req.Host, req.URL, fReq.Signature(), reqTime)
+	Trace("%s [%s] %s%s S=%v Sig=%s Tot=%.4fs", fReq.ID, req.Method, req.Host, req.URL, res.StatusCode, fReq.Signature(), reqTime)
 	l := fReq.PipelineStageStats
 	for e := l.Front(); e != nil; e = e.Next() {
 		pss, _ := e.Value.(*PipelineStageStat)
 		dur := TimeDiff(pss.StartTime, pss.EndTime)
-		Trace("%s %-30s S=%d Tot=%.4f %%=%.2f", fReq.ID, pss.Name, pss.Status, dur, dur/reqTime*100.0)
+		Trace("%s [%s]%-30s S=%d Tot=%.4fs %%=%.2f", fReq.ID, pss.Type, pss.Name, pss.Status, dur, dur/(reqTime*100.0))
 	}
-	Trace("%s %-30s S=0 Tot=%.4f %%=%.2f", fReq.ID, "Overhead", float32(fReq.Overhead)/1.0e9, float32(fReq.Overhead)/1.0e9/reqTime*100.0)
+	Trace("%s %-30s S=0 Tot=%.4fs %%=%.2f", fReq.ID, "Overhead", float32(fReq.Overhead)/float32(time.Second), float32(fReq.Overhead)/float32(time.Second)/reqTime*100.0)
 }
 
 func (fReq *Request) finishRequest() {
@@ -143,11 +159,11 @@ func (fReq *Request) finishRequest() {
 	fReq.Overhead = fReq.EndTime.Sub(fReq.StartTime) - fReq.piplineTot
 }
 
-// Container for keeping stats per pipeline stage 
+// Container for keeping stats per pipeline stage
 // Name for filter stages is reflect.TypeOf(filter).String()[1:] and the Status is 0 unless
 // it is changed explicitly in the Filter or Router.
-// 
-// For the Status, the falcore library will not apply any specific meaning to the status 
+//
+// For the Status, the falcore library will not apply any specific meaning to the status
 // codes but the following are suggested conventional usages that we have found useful
 //
 //   type PipelineStatus byte
@@ -159,10 +175,21 @@ func (fReq *Request) finishRequest() {
 //   )
 type PipelineStageStat struct {
 	Name      string
+	Type      PipelineStageType
 	Status    byte
 	StartTime time.Time
 	EndTime   time.Time
 }
+
+type PipelineStageType string
+
+const (
+	PipelineStageTypeOther      PipelineStageType = "OT"
+	PipelineStageTypeUpstream   PipelineStageType = "UP"
+	PipelineStageTypeDownstream PipelineStageType = "DN"
+	PipelineStageTypeRouter     PipelineStageType = "RT"
+	PipelineStageTypeOverhead   PipelineStageType = "OH"
+)
 
 func NewPiplineStage(name string) *PipelineStageStat {
 	pss := new(PipelineStageStat)
