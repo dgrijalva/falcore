@@ -11,7 +11,7 @@ import (
 // Goroutines:
 //   1 for network reading & session control
 //   1 for network writing (to not block reader while sending)
-//   1 per active session
+//   1 per active stream
 
 type spdyConnection struct {
 	conn net.Conn

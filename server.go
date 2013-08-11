@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,18 +20,19 @@ import (
 )
 
 type Server struct {
-	Addr               string
-	Pipeline           *Pipeline
-	CompletionCallback RequestCompletionCallback
-	listener           net.Listener
-	listenerFile       *os.File
-	stopAccepting      chan int
-	handlerWaitGroup   *sync.WaitGroup
-	logPrefix          string
-	AcceptReady        chan int
-	sendfile           bool
-	sockOpt            int
-	bufferPool         *BufferPool
+	Addr                string
+	Pipeline            *Pipeline
+	CompletionCallback  RequestCompletionCallback
+	listener            net.Listener
+	listenerFile        *os.File
+	stopAccepting       chan struct{}
+	handlerWaitGroup    *sync.WaitGroup
+	logPrefix           string
+	AcceptReady         <-chan struct{}
+	closableAcceptReady chan struct{}
+	bufferPool          *BufferPool
+	writeBufferPool     *WriteBufferPool
+	PanicHandler        func(conn net.Conn, err interface{})
 }
 
 type RequestCompletionCallback func(req *Request, res *http.Response)
@@ -41,27 +41,15 @@ func NewServer(port int, pipeline *Pipeline) *Server {
 	s := new(Server)
 	s.Addr = fmt.Sprintf(":%v", port)
 	s.Pipeline = pipeline
-	s.stopAccepting = make(chan int)
-	s.AcceptReady = make(chan int, 1)
+	s.stopAccepting = make(chan struct{})
+	s.closableAcceptReady = make(chan struct{})
+	s.AcceptReady = s.closableAcceptReady
 	s.handlerWaitGroup = new(sync.WaitGroup)
 	s.logPrefix = fmt.Sprintf("%d", syscall.Getpid())
 
-	// openbsd/netbsd don't have TCP_NOPUSH so it's likely sendfile will be slower
-	// without these socket options, just enable for linux, mac and freebsd.
-	// TODO (Graham) windows has TransmitFile zero-copy mechanism, try to use it
-	switch runtime.GOOS {
-	case "linux":
-		s.sendfile = true
-		s.sockOpt = 0x3 // syscall.TCP_CORK
-	case "freebsd", "darwin":
-		s.sendfile = true
-		s.sockOpt = 0x4 // syscall.TCP_NOPUSH
-	default:
-		s.sendfile = false
-	}
-
 	// buffer pool for reusing connection bufio.Readers
 	s.bufferPool = NewBufferPool(100, 8192)
+	s.writeBufferPool = NewWriteBufferPool(100, 4096)
 
 	return s
 }
@@ -154,22 +142,29 @@ func (srv *Server) Port() int {
 	return 0
 }
 
-func (srv *Server) serve() (e error) {
-	var accept = true
-	srv.AcceptReady <- 1
-	for accept {
+func (srv *Server) serve() error {
+	close(srv.closableAcceptReady)
+
+	defer func() {
+		Trace("Stopped accepting, waiting for handlers")
+		// wait for handlers
+		srv.handlerWaitGroup.Wait()
+	}()
+
+	for {
 		var c net.Conn
+		var err error
 		if l, ok := srv.listener.(*net.TCPListener); ok {
 			l.SetDeadline(time.Now().Add(3 * time.Second))
 		}
-		c, e = srv.listener.Accept()
-		if e != nil {
-			if ope, ok := e.(*net.OpError); ok {
+		c, err = srv.listener.Accept()
+		if err != nil {
+			if ope, ok := err.(*net.OpError); ok {
 				if !(ope.Timeout() && ope.Temporary()) {
 					Error("%s SERVER Accept Error: %v", srv.serverLogPrefix(), ope)
 				}
 			} else {
-				Error("%s SERVER Accept Error: %v", srv.serverLogPrefix(), e)
+				Error("%s SERVER Accept Error: %v", srv.serverLogPrefix(), err)
 			}
 		} else {
 			//Trace("Handling!")
@@ -178,13 +173,10 @@ func (srv *Server) serve() (e error) {
 		}
 		select {
 		case <-srv.stopAccepting:
-			accept = false
+			return nil
 		default:
 		}
 	}
-	Trace("Stopped accepting, waiting for handlers")
-	// wait for handlers
-	srv.handlerWaitGroup.Wait()
 	return nil
 }
 
@@ -204,7 +196,7 @@ func (srv *Server) handleNewConn(c net.Conn){
 	go srv.handler(c)
 }
 
-func (srv *Server) sentinel(c net.Conn, connClosed chan int) {
+func (srv *Server) sentinel(c net.Conn, connClosed chan struct{}) {
 	select {
 	case <-srv.stopAccepting:
 		c.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -246,7 +238,9 @@ func (srv *Server) handler(c net.Conn) {
 	var startTime time.Time
 	bpe := srv.bufferPool.Take(c)
 	defer srv.bufferPool.Give(bpe)
-	var closeSentinelChan = make(chan int)
+	wbpe := srv.writeBufferPool.Take(c)
+	defer srv.writeBufferPool.Give(wbpe)
+	closeSentinelChan := make(chan struct{})
 	go srv.sentinel(c, closeSentinelChan)
 	defer srv.connectionFinished(c, closeSentinelChan)
 	var err error
@@ -288,7 +282,7 @@ func (srv *Server) handler(c net.Conn) {
 			}
 
 			// write response
-			srv.handlerWriteResponse(request, res, c)
+			srv.handlerWriteResponse(request, res, c, wbpe.Br)
 
 			if res.Close {
 				keepAlive = false
@@ -304,6 +298,7 @@ func (srv *Server) handler(c net.Conn) {
 }
 
 func (srv *Server) handlerExecutePipeline(request *Request, keepAlive bool) *http.Response {
+
 	var res *http.Response
 	// execute the pipeline
 	if res = srv.Pipeline.execute(request); res == nil {
@@ -349,7 +344,7 @@ func (srv *Server) handlerExecutePipeline(request *Request, keepAlive bool) *htt
 	// For HTTP/1.0 and Keep-Alive, sending the Connection: Keep-Alive response header is required
 	// because close is default (opposite of 1.1)
 	if keepAlive && !request.HttpRequest.ProtoAtLeast(1, 1) {
-		res.Header.Add("Connection", "Keep-Alive")
+		res.Header.Set("Connection", "Keep-Alive")
 	}
 
 	// cleanup
@@ -357,18 +352,18 @@ func (srv *Server) handlerExecutePipeline(request *Request, keepAlive bool) *htt
 	return res
 }
 
-func (srv *Server) handlerWriteResponse(request *Request, res *http.Response, c io.WriteCloser) {
+func (srv *Server) handlerWriteResponse(request *Request, res *http.Response, c net.Conn, bw *bufio.Writer) {
 	request.startPipelineStage("server.ResponseWrite")
 	request.CurrentStage.Type = PipelineStageTypeOverhead
-	if srv.sendfile {
-		res.Write(c)
-		if conn, ok := c.(net.Conn); ok {
-			srv.cycleNonBlock(conn)
-		}
+
+	var nodelay = srv.setNoDelay(c, false)
+	if nodelay {
+		res.Write(bw)
+		bw.Flush()
+		srv.setNoDelay(c, true)
 	} else {
-		wbuf := bufio.NewWriter(c)
-		res.Write(wbuf)
-		wbuf.Flush()
+		res.Write(bw)
+		bw.Flush()
 	}
 	if res.Body != nil {
 		res.Body.Close()
@@ -389,7 +384,13 @@ func (srv *Server) requestFinished(request *Request, res *http.Response) {
 	}
 }
 
-func (srv *Server) connectionFinished(c net.Conn, closeChan chan int) {
+func (srv *Server) connectionFinished(c net.Conn, closeChan chan struct{}) {
+	if srv.PanicHandler != nil {
+		if err := recover(); err != nil {
+			srv.PanicHandler(c, err)
+		}
+	}
+
 	c.Close()
 	if closeChan != nil {
 		close(closeChan)
