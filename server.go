@@ -180,7 +180,7 @@ func (srv *Server) serve() error {
 	return nil
 }
 
-func (srv *Server) handleNewConn(c net.Conn){
+func (srv *Server) handleNewConn(c net.Conn) {
 	fmt.Printf("Connected: %T", c)
 	if tlsConn, ok := c.(*tls.Conn); ok {
 		if err := tlsConn.Handshake(); err != nil {

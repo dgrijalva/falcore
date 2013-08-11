@@ -2,8 +2,8 @@ package falcore
 
 import (
 	"net"
-	"time"
 	"sync"
+	"time"
 
 	"code.google.com/p/go.net/spdy"
 )
@@ -14,24 +14,31 @@ import (
 //   1 per active stream
 
 type spdyConnection struct {
-	conn net.Conn
-	framer *spdy.Framer
-	streams map[uint32]chan spdy.Frame
-	sendChan chan spdy.Frame
-	closeChan chan int
-	closeOnce *sync.Once
-	goaway bool
+	conn               net.Conn
+	framer             *spdy.Framer
+	streams            map[uint32]chan spdy.Frame
+	sendChan           chan spdy.Frame
+	closeChan          chan int
+	closeOnce          *sync.Once
+	goaway             bool
 	lastAcceptedStream uint32
-	lock *sync.RWMutex
+	lock               *sync.RWMutex
 }
 
-func (srv *Server) spdyHandler(c net.Conn){
+// Handle a new connection.  Sets everything up, starts writer routine, and becomes reader routine.
+// Blocks until the session is complete.
+func (srv *Server) spdyHandler(c net.Conn) {
 	// Create a framer
 	var err error
 	var session = new(spdyConnection)
 
-	// FIXME: should we be using buffered reader/writers?
-	if session.framer, err = spdy.NewFramer(c, c); err != nil {
+	// Use buffered readers and writers
+	var rdrpe = srv.bufferPool.Take(c)
+	var wtrpe = srv.writeBufferPool.Take(c)
+	defer srv.bufferPool.Give(rdrpe)
+	defer srv.bufferPool.Give(wtrpe)
+
+	if session.framer, err = spdy.NewFramer(rdrpe.Br, wtrpe.Bw); err != nil {
 		Error("Couldn't get spdy.Framer for conn: %v", err)
 		srv.connectionFinished(c, nil)
 		return
@@ -44,32 +51,19 @@ func (srv *Server) spdyHandler(c net.Conn){
 	session.closeOnce = new(sync.Once)
 	session.goaway = false
 	session.lock = new(sync.RWMutex)
-	
+
 	go srv.spdyWriter(session)
-	defer func(){
+	defer func() {
+		srv.spdyCloseSession(session)
 		srv.connectionFinished(c, nil)
-		session.closeOnce.Do(func(){
-			close(session.closeChan)
-		})
 	}()
-	
+
+	// Become reader goroutine.  
 	srv.spdyReader(session)
 }
 
-func (srv *Server) spdyHandleStream(session *spdyConnection, streamId uint32, fchan chan spdy.Frame) {
-	defer session.deregisterStream(streamId)
-	for {
-		_, ok := <- fchan
-		if ok {
-			
-		} else {
-			
-		}
-	}
-}
-
 // send using select incase writer is already shutdown
-func (session *spdyConnection) send(frame spdy.Frame)bool {
+func (session *spdyConnection) send(frame spdy.Frame) bool {
 	select {
 	case session.sendChan <- frame:
 		return true
@@ -88,7 +82,7 @@ func (session *spdyConnection) registerStream(streamId uint32, fchan chan spdy.F
 	}
 }
 
-func (session *spdyConnection) lookupStream(streamId uint32)(chan spdy.Frame) {
+func (session *spdyConnection) lookupStream(streamId uint32) chan spdy.Frame {
 	session.lock.RLock()
 	defer session.lock.RUnlock()
 	return session.streams[streamId]
@@ -100,6 +94,7 @@ func (session *spdyConnection) deregisterStream(streamId uint32) {
 	delete(session.streams, streamId)
 }
 
+// Main read loop.  Also manages session state.
 func (srv *Server) spdyReader(session *spdyConnection) {
 	var frame spdy.Frame
 	var err error
@@ -130,6 +125,7 @@ func (srv *Server) spdyReader(session *spdyConnection) {
 	}
 }
 
+// Main write loop.
 func (srv *Server) spdyWriter(session *spdyConnection) {
 	for {
 		select {
@@ -139,15 +135,32 @@ func (srv *Server) spdyWriter(session *spdyConnection) {
 		case frame := <-session.sendChan:
 			// Attempt to write frame to the wire
 			if err := session.framer.WriteFrame(frame); err != nil {
-				// close the close chan to signal we're done
-				session.closeOnce.Do(func(){
-					close(session.closeChan)
-				})
+				srv.spdyCloseSession(session)
 			}
 		case <-session.closeChan:
-			srv.connectionFinished(session.conn, nil)
-			// aaand we're done.  reader goroutine will close up
+			// aaand we're done.  reader goroutine will clean up
 			return
+		}
+	}
+}
+
+// Mark the session as closed. This will trigger the reader and writers to shut down
+func (srv *Server) spdyCloseSession(session *spdyConnection) {
+	// close the close chan to signal we're done
+	session.closeOnce.Do(func() {
+		close(session.closeChan)
+	})
+}
+
+// Handle an individual stream
+func (srv *Server) spdyHandleStream(session *spdyConnection, streamId uint32, fchan chan spdy.Frame) {
+	defer session.deregisterStream(streamId)
+	for {
+		_, ok := <-fchan
+		if ok {
+
+		} else {
+
 		}
 	}
 }
