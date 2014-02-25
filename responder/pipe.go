@@ -28,7 +28,8 @@ func BufferedPipeResponse(req *http.Request, status int, headers http.Header) (i
 	case buff = <-pipeBufferPool:
 		buff.Reset()
 	default:
-		buff = utils.NewRingBuffer(1024)
+		// 3K buffer is the same size as io.Copy's buffer ;)
+		buff = utils.NewRingBuffer(1024 * 3)
 	}
 
 	pR, pW := utils.NewBufferedPipe(buff)
@@ -45,5 +46,5 @@ func BufferedPipeResponse(req *http.Request, status int, headers http.Header) (i
 	return pW, falcore.SimpleResponse(req, status, headers, -1, pR)
 }
 
-// 1024 buffers x 1024 bytes = 1MB
+// 1024 buffers x 3KB/buffer = 3MB
 var pipeBufferPool = make(chan *utils.RingBuffer, 1024)
